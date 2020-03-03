@@ -1,18 +1,23 @@
 package main
 import (
 	"os"
+	"io"
 	"io/ioutil"
 	"fmt"
 	"net/http"
 	"encoding/json"
 	"time"
 	"path/filepath"
+	"log"
 )
+
+// Structs for Github release messages
 
 type Asset struct {
 	Name string `json:"name"`
 	ContentType string `json:"content_type"`
 	BrowserDownloadUrl string `json:"browser_download_url"`
+	Size int64 `json:"size"`
 }
 
 type Release struct {
@@ -32,30 +37,27 @@ func getLatestRelease() Release {
 	// Call the API
 	resp, err := client.Get("https://api.github.com/repos/mamedev/mame/releases")
 	if err != nil {
-		fmt.Printf("Error getting Mame releases: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Error getting Mame releases: %v\n", err)
 	}
 	defer resp.Body.Close()
 
 	// Read the body
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Printf("Error reading Mame releases response: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Error reading Mame releases response: %v\n", err)
 	}
 
 	// Unmarshall json
 	releases := make([]Release,0)
 	json.Unmarshal(body, &releases)
 	if err != nil {
-		fmt.Printf("Error unmarshalling json: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Error unmarshalling json: %v\n", err)
 	}
 
 	// Get the latest release
 	if len(releases) == 0 {
-		fmt.Printf("No releases found on Github")
-		os.Exit(1)
+		log.Println(string(body))
+		log.Fatal("No releases found on Github")
 	}
 	latestRelease := releases[0]
 	for _, release := range releases {
@@ -68,45 +70,85 @@ func getLatestRelease() Release {
 	return latestRelease
 }
 
-func download(release Release) {
+func download(release Release) Asset {
 	client := &http.Client{}
 
 	for _, asset := range release.Assets {
-		name := asset.Name
-		fmt.Println("Asset: %s", name)
-		if len(name) < 4 || strings.ToLower(filepath.Ext(name)) != ".exe" {
+		// We're interested in .exe files, 
+		// excluding the self-extracting source archive
+		// ie mame0219b_64bit.exe, but not mame0219s.exe
+		filename := asset.Name
+		extension := filepath.Ext(filename)
+		name := filename[0:len(filename)-len(extension)]
+		if len(name) < 4 || extension != ".exe" || name[len(name)-1:] == "s" {
+			fmt.Printf("Skipping %s\n", asset.Name)
 			continue
+		} else {
+			info, _ := os.Stat(filename)
+			if info != nil && info.Size() == asset.Size {
+				fmt.Printf("Release %s already downloaded.\n", asset.Name)
+				continue
+			}
 		}
-		fmt.Printf("Downloading %s from %s", name, asset.BrowserDownloadUrl)
+		fmt.Printf("Downloading %s (%dM)...\n", asset.Name, asset.Size / (1024*1024))
 
 		// Call the API
 		resp, err := client.Get(asset.BrowserDownloadUrl)
 		if err != nil {
-			fmt.Printf("Error getting Mame release %s: %v\n", asset.Name, err)
-			os.Exit(1)
+			log.Fatalf("Error getting Mame release %s: %v\n", asset.Name, err)
 		}
 		defer resp.Body.Close()
 
 		// Create the file
-		out, err := os.Create(name)
+		out, err := os.Create(filename)
 		if err != nil {
-			fmt.Printf("Error creating output file: %v\n", err)
-			os.Exit(1)
+			log.Fatalf("Error creating file %s\n", filename)
 		}
 		defer out.Close()
 	
 		// Download the body
-		_, err := io.Copy(out, resp.Body)
+		written, err := io.Copy(out, resp.Body)
 		if err != nil {
-			fmt.Printf("Error writing output file: %v\n", err)
-			os.Exit(1)
+			log.Fatalf("Error writing output file: %v\n", err)
+		} else if written != asset.Size {
+			log.Fatalf("Expected to download %d bytes, but actually got %d bytes.", asset.Size, written)
 		}
+
+		return asset
+	}
+
+	return Asset{}
+}
+
+func save(name string, size int64) {
+
+	from, err := os.Open(name)
+	if err != nil {
+		log.Fatalf("Error opening input file %s: %v\n", name, err)
+	}
+	defer from.Close()
+	
+	to, err := os.OpenFile("mame.exe", os.O_RDWR|os.O_CREATE, 0775)
+	if err != nil {
+		log.Fatalf("Error opening output file %s: %v\n", "mame.exe", err)
+	}
+	defer to.Close()
+	
+	_, err = io.Copy(to, from)
+	if err != nil {
+		log.Fatalf("Error copying file: %v", err)
 	}
 }
 
 func main() {
+	fmt.Printf("Checking releases\n")
 	release := getLatestRelease()
-	download(release)
 	fmt.Printf("Latest release is %s, published at %v\n", release.Name, release.PublishedAt)
+	asset := download(release)
+	if asset.Name != "" {
+		fmt.Printf("Looks like a successful download. Saving.\n")
+		// TODO check size / SHA
+		save(name, size)
+	}
 	fmt.Println("Fin.")
 }
