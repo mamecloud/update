@@ -120,11 +120,11 @@ func download(release Release) Asset {
 	return Asset{}
 }
 
-func save(name string, size int64) {
+func save(asset Asset) {
 
-	from, err := os.Open(name)
+	from, err := os.Open(asset.Name)
 	if err != nil {
-		log.Fatalf("Error opening input file %s: %v\n", name, err)
+		log.Fatalf("Error opening input file %s: %v\n", asset.Name, err)
 	}
 	defer from.Close()
 	
@@ -148,7 +148,7 @@ func main() {
 	if asset.Name != "" {
 		fmt.Printf("Looks like a successful download. Saving.\n")
 		// TODO check size / SHA
-		save(name, size)
+		save(asset)
 	}
 	fmt.Println("Fin.")
 }
